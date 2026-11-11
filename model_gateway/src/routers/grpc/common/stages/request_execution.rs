@@ -10,7 +10,8 @@ use std::{
 use axum::response::Response;
 use futures::future::{join_all, try_join_all};
 use smg_grpc_client::{
-    is_transport_failure, media_identity::sglang as media_contract, RequestDeadline,
+    is_request_timeout, is_transport_failure, media_identity::sglang as media_contract,
+    RequestDeadline,
 };
 use tokio::sync::oneshot;
 use tracing::{debug, error, info_span, warn, Instrument};
@@ -35,7 +36,9 @@ use crate::{
         },
         error,
         grpc::{
-            common::stages::encode::EncodeDispatchPlan,
+            common::{
+                response_collection::prefill_drain_failed, stages::encode::EncodeDispatchPlan,
+            },
             context::{
                 stage_output, ClientSelection, DispatchContext, EncodeOutputs, ExecutionPlan,
                 ExecutionPlanKind, ExecutionResult, LoadGuards, PdTiming, WorkerSelection,
@@ -334,7 +337,16 @@ pub(crate) async fn execute_plan(
             },
             ExecutionPlan::PrefillDecode(req) => {
                 let prefill_guard = require_prefill_guard(prefill_guard)?;
-                execute_pd_dispatch(req, clients, workers, model, prefill_guard, ledger).await
+                execute_pd_dispatch(
+                    req,
+                    clients,
+                    workers,
+                    model,
+                    prefill_guard,
+                    ledger,
+                    deadline,
+                )
+                .await
             }
             ExecutionPlan::EncodePrefillDecode { request } => {
                 let push_encode = matches!(encode, Some(EncodeOutputs::Push(_)));
@@ -350,6 +362,7 @@ pub(crate) async fn execute_plan(
                     encode,
                     prefill_guard,
                     ledger,
+                    deadline,
                 )
                 .await
                 .map_err(|mut response| {
@@ -371,6 +384,7 @@ pub(crate) async fn execute_plan(
                     prefill_guard,
                     ledger,
                     dispatched_at.into_std(),
+                    deadline,
                 )
                 .await
             }
@@ -484,6 +498,7 @@ async fn execute_pd_dispatch(
     model: &str,
     prefill_guard: PrefillLoadGuard,
     ledger: &AttemptLedger,
+    deadline: Option<RequestDeadline>,
 ) -> Result<ExecutionResult, Response> {
     let Some(runtime_type) = workers.disaggregated_runtime_type() else {
         error!(
@@ -524,10 +539,27 @@ async fn execute_pd_dispatch(
         }
         PdDispatch::Parallel => match pd_fanout_width(&proto_request, protocol) {
             Some(n) => {
-                execute_fanout_pd(proto_request, n, clients, workers, prefill_guard, ledger).await
+                execute_fanout_pd(
+                    proto_request,
+                    n,
+                    clients,
+                    workers,
+                    prefill_guard,
+                    ledger,
+                    deadline,
+                )
+                .await
             }
             None => {
-                execute_parallel_pd(proto_request, clients, workers, prefill_guard, ledger).await
+                execute_parallel_pd(
+                    proto_request,
+                    clients,
+                    workers,
+                    prefill_guard,
+                    ledger,
+                    deadline,
+                )
+                .await
             }
         },
     }?;
@@ -591,6 +623,7 @@ async fn execute_fanout_pd(
     workers: &WorkerSelection,
     prefill_guard: PrefillLoadGuard,
     ledger: &AttemptLedger,
+    deadline: Option<RequestDeadline>,
 ) -> Result<ExecutionResult, Response> {
     let subs = fan_out_pd_request(&proto_request, n, |sub| {
         maybe_inject_pd_metadata(sub, workers);
@@ -606,7 +639,7 @@ async fn execute_fanout_pd(
     let guards = prefill_guard.replicate_to(subs.len());
     let dispatches = subs.into_iter().zip(guards).map(|(sub, guard)| {
         let mut clients = clients.clone();
-        async move { execute_parallel_pd(sub, &mut clients, workers, guard, ledger).await }
+        async move { execute_parallel_pd(sub, &mut clients, workers, guard, ledger, deadline).await }
     });
     let results = try_join_all(dispatches).await?;
 
@@ -661,6 +694,7 @@ async fn execute_fanout_pd(
 /// Dispatch an EPD request by the encode stage's plan: a push plan's encoder
 /// completes before the prefill/decode pair is sent; a rendezvous plan's
 /// encode jobs launch beside the pair.
+#[expect(clippy::too_many_arguments)]
 async fn execute_epd_dispatch(
     mut proto_request: ProtoGenerateRequest,
     clients: &mut ClientSelection,
@@ -669,6 +703,7 @@ async fn execute_epd_dispatch(
     encode: Option<EncodeOutputs>,
     prefill_guard: PrefillLoadGuard,
     ledger: &AttemptLedger,
+    deadline: Option<RequestDeadline>,
 ) -> Result<ExecutionResult, Response> {
     let mut cleanup = None;
     match encode {
@@ -693,6 +728,7 @@ async fn execute_epd_dispatch(
         model,
         prefill_guard,
         ledger,
+        deadline,
     )
     .await;
     if result.is_ok() {
@@ -762,6 +798,7 @@ async fn execute_batch_dispatch(
     prefill_guard: Option<PrefillLoadGuard>,
     ledger: &AttemptLedger,
     dispatched_at: Instant,
+    deadline: Option<RequestDeadline>,
 ) -> Result<ExecutionResult, Response> {
     // One Prefill handle per PD sub-request, all on the one admission slot.
     let prefill_guards: Vec<Option<PrefillLoadGuard>> = match kind {
@@ -794,6 +831,7 @@ async fn execute_batch_dispatch(
                             model,
                             prefill_guard,
                             ledger,
+                            deadline,
                         )
                         .await
                     }
@@ -1028,6 +1066,7 @@ async fn execute_parallel_pd(
     workers: &WorkerSelection,
     prefill_guard: PrefillLoadGuard,
     ledger: &AttemptLedger,
+    deadline: Option<RequestDeadline>,
 ) -> Result<ExecutionResult, Response> {
     let streaming = proto_request.stream();
     let runtime = workers
@@ -1057,7 +1096,9 @@ async fn execute_parallel_pd(
     // fails the attempt instead of holding the request (and the decode room
     // the admission gate claimed for it) until its own timeout. A side whose
     // embeddings come from an encode worker has the encoder's forward and
-    // the transfer in front of its first response as well.
+    // the transfer in front of its first response as well. The decode
+    // side's first output is watched for under the same bound once the
+    // prefill side has answered (see `DecodeSideWatch`).
     let prefill_worker = workers.prefill_worker();
     let bound = prefill_worker.and_then(|worker| {
         if prefill_request.awaits_encode() {
@@ -1066,6 +1107,7 @@ async fn execute_parallel_pd(
             PrefillBound::at(worker, sides.prompt_tokens, prefill_start)
         }
     });
+    let watch = DecodeSideWatch::of(bound.as_ref(), &sides);
     // Each side owns its client handle (a cheap channel clone, the same one
     // batched dispatch takes per sub-request) so the side still in flight when
     // its partner fails can be moved off the request path.
@@ -1135,13 +1177,13 @@ async fn execute_parallel_pd(
 
     // The prefill worker's handoffs are watched for only where its side has a bound.
     let handoff_to = bound.as_ref().and(prefill_worker);
-    match dispatch_pd_sides(prefill_dispatch, decode_dispatch, handoff_to).await {
+    match dispatch_pd_sides(prefill_dispatch, decode_dispatch, handoff_to, watch).await {
         PdDispatchOutcome::Both(prefill_result, decode_result) => {
             parallel_sides_answered(
                 &sides,
                 prefill_result,
                 decode_result,
-                bound,
+                bound.as_ref(),
                 prefill_ticket,
                 prefill_guard,
                 // Both sides were dispatched together, so the decode side's
@@ -1151,6 +1193,7 @@ async fn execute_parallel_pd(
                     decode_sent: prefill_start,
                     runtime,
                 },
+                deadline,
             )
             .await
         }
@@ -1203,18 +1246,22 @@ fn parallel_pd_requests(
 
 /// Both sides answered their dispatch: each verdict is translated before either
 /// is propagated, the prefill side's first response is waited for within what is
-/// left of its bound, and the pair goes to the response with the decode's abort
-/// deferred until its first item.
+/// left of its bound, then the decode side's within what its watch gives it
+/// (see [`DecodeSideWatch`]), and the pair goes to the response with the
+/// decode's abort deferred until its first item.
+#[expect(clippy::too_many_arguments)]
 async fn parallel_sides_answered(
     sides: &PdSides<'_>,
     prefill_result: StreamResult,
     decode_result: StreamResult,
-    bound: Option<PrefillBound>,
+    bound: Option<&PrefillBound>,
     prefill_ticket: Option<PrefillTicket>,
     prefill_guard: PrefillLoadGuard,
     pd_timing: PdTiming,
+    deadline: Option<RequestDeadline>,
 ) -> Result<ExecutionResult, Response> {
     let workers = sides.workers;
+    let watch = DecodeSideWatch::of(bound, sides);
     record_pd_dispatch_outcomes(workers, sides.ledger, &prefill_result, &decode_result);
     // A non-streaming request's decode side has no first-token signal (its
     // one response is its whole answer), so the wait its deferred abort
@@ -1246,9 +1293,19 @@ async fn parallel_sides_answered(
             drop(decode.defer_abort_until_first_item());
             return Err(response);
         }
+        // The decode side failed (its dispatch-phase silence verdict
+        // included) with the prefill side's answer in hand, pulled ahead by
+        // the dispatch loop: the answer is booked on the prefill worker
+        // before the pair is given up on, so the worker that answered is
+        // not read as silent for it (see [`book_prefill_answer_ahead`]).
+        // The prefill stream drops here, which aborts its room.
+        (Ok(prefill), Err(response)) => {
+            book_prefill_answer_ahead(&prefill, prefill_ticket, bound, workers, sides.ledger);
+            return Err(response);
+        }
         // Any other failure: the surviving side's stream drops here,
         // which aborts its room on the worker.
-        (Err(response), _) | (Ok(_), Err(response)) => return Err(response),
+        (Err(response), _) => return Err(response),
     };
 
     // The prefill side's prompt has been pending prefill on its worker
@@ -1265,9 +1322,9 @@ async fn parallel_sides_answered(
         }
         None => prefill_stream,
     };
-    match first_prefill_response_within(
+    let prefill_answered = match first_prefill_response_within(
         &mut prefill_stream,
-        bound,
+        bound.cloned(),
         prefill_worker,
         workers
             .decode_worker()
@@ -1298,9 +1355,12 @@ async fn parallel_sides_answered(
         // where its reader meets it (the streaming layer's
         // accounting); a stream that ended with nothing on it is no
         // success of the side either.
-        Ok(FirstItem::Response) => workers.record_outcome_prefill(sides.ledger, 200),
-        Ok(FirstItem::Failure | FirstItem::End) => {}
-    }
+        Ok(FirstItem::Response) => {
+            workers.record_outcome_prefill(sides.ledger, 200);
+            true
+        }
+        Ok(FirstItem::Failure | FirstItem::End) => false,
+    };
 
     // A client disconnect drops both side streams, which normally fires an
     // immediate abort to each worker. The decode side must not be aborted
@@ -1322,14 +1382,146 @@ async fn parallel_sides_answered(
         None => decode_stream.defer_abort_until_first_item(),
     };
 
+    // The prefill side has answered, so the decode side's first output is
+    // due (see `DecodeSideWatch`): the side is tracked on its worker here,
+    // as the sequential shape tracks its decode side at the dispatch, so
+    // its first item is waited for under the watch and left for its
+    // reader. The prefill side is read through to its `Complete` meanwhile
+    // (`ProtoStream::complete_held`), so its admission slot and load end
+    // there, not at the decode side's first token (or its bound): the
+    // `Complete` stays held for the reader, which meets it and stops there
+    // as it did (the result carries the side's released slot, counted as
+    // done at that `Complete`, see `drain_prefill`). A side
+    // holding its first item already (pulled ahead as the handoff while the
+    // prefill side dispatched) has answered; a prefill whose first item was
+    // a failure or the end leaves the pair to its reader, which meets that
+    // next.
+    let (decode_stream, prefill_guards) = match watch {
+        Some(watch) if prefill_answered && !decode_stream.holds_item_ahead() => {
+            let mut decode_stream = decode_stream.tracked_decode_side(Arc::clone(watch.decode));
+            let drained = {
+                let drain = async {
+                    // The read is bounded as its reader's would have been, by
+                    // the attempt's deadline (the one `apply_deadline` puts on
+                    // every stream once the dispatch returns): a prefill side
+                    // that spoke and then stalls before its `Complete` is this
+                    // side's failure, met here, not the decode side's, which
+                    // the dispatch deadline would charge for the wait (see
+                    // `dispatch_timed_out`). A failure met here is counted
+                    // under the rendezvous family where the reader's drain
+                    // counted it.
+                    let read = prefill_stream.complete_held();
+                    let held = match deadline {
+                        Some(deadline) => {
+                            match tokio::time::timeout_at(deadline.at(), read).await {
+                                Ok(held) => held,
+                                Err(_) => Err(deadline.status()),
+                            }
+                        }
+                        None => read.await,
+                    }
+                    .inspect_err(|status| {
+                        account_pd_side_failure(metrics_labels::WORKER_PREFILL, status);
+                    });
+                    // The slot and load go with the `Complete` in hand (or
+                    // with the side's end or failure: the pair is over).
+                    drop(prefill_guard);
+                    held
+                };
+                let first = first_parallel_decode_response_within(&mut decode_stream, watch);
+                drain_prefill_while_decode_answers(drain, first).await
+            };
+            match drained {
+                DrainedPair::Both => (decode_stream, vec![None]),
+                DrainedPair::DecodeFailed(e) => {
+                    // The dropped prefill stream sends its abort, a no-op
+                    // for a request its engine has completed; the decode's
+                    // abort is deferred past the handoff, as above.
+                    drop(prefill_stream);
+                    drop(decode_stream);
+                    record_silence_outcome(workers, sides.ledger, &e);
+                    return Err(pd_side_error(
+                        PdSide::Decode,
+                        sides.decode_label,
+                        &e,
+                        workers,
+                    ));
+                }
+                DrainedPair::PrefillFailed(e) => {
+                    // The decode's abort waits for its first response: the
+                    // handoff the prefill side started may be in flight.
+                    drop(decode_stream.defer_abort_until_first_item());
+                    let mut response = prefill_drain_failed(prefill_worker, &e);
+                    // The attempt's own deadline passed in that read: its
+                    // answer is terminal for the retry layer, as every request
+                    // timeout cut is (a replay would hold the client for a
+                    // second timeout; see `dispatch_timed_out`).
+                    if is_request_timeout(&e) {
+                        mark_non_retryable(&mut response);
+                    }
+                    return Err(response);
+                }
+            }
+        }
+        _ => (decode_stream, vec![Some(prefill_guard)]),
+    };
+
     Ok(ExecutionResult::PrefillDecode {
         prefill: prefill_stream,
         decode: Box::new(decode_stream),
-        prefill_guards: vec![Some(prefill_guard)],
+        prefill_guards,
         pd_timing,
-        // The streaming layer drains the live prefill stream itself.
+        // The streaming layer drains the prefill stream itself (a side read
+        // through to its `Complete` above holds that `Complete` for it).
         prefill_input_logprobs: None,
     })
+}
+
+/// What the prefill side's read to its `Complete` and the wait for the decode
+/// side's first item, run together, ended with (see
+/// [`drain_prefill_while_decode_answers`]).
+enum DrainedPair {
+    /// The prefill side's `Complete` is held for its reader (or the side
+    /// ended before one), and the decode side answered.
+    Both,
+    /// The prefill side's stream failed before its `Complete`; the decode
+    /// side is left unjudged.
+    PrefillFailed(tonic::Status),
+    /// The decode side's silence verdict; the prefill side's read ends where
+    /// it was.
+    DecodeFailed(tonic::Status),
+}
+
+/// Run `drain` (the prefill side read through to its `Complete`, see
+/// [`ProtoStream::complete_held`]) and `first` (the wait for the decode
+/// side's first item, see [`first_parallel_decode_response_within`])
+/// together, so the prefill side's slot ends at its `Complete` while the
+/// decode side is waited for. A prefill side that fails before its `Complete`
+/// ends the pair at once; a decode verdict ends it with the read where it
+/// was; a decode side that answered first waits for the `Complete`, as its
+/// reader would have.
+async fn drain_prefill_while_decode_answers(
+    drain: impl Future<Output = Result<bool, tonic::Status>>,
+    first: impl Future<Output = Result<FirstItem, tonic::Status>>,
+) -> DrainedPair {
+    tokio::pin!(drain, first);
+    tokio::select! {
+        biased;
+        drained = &mut drain => match drained {
+            Err(e) => DrainedPair::PrefillFailed(e),
+            Ok(_) => match first.await {
+                Ok(_) => DrainedPair::Both,
+                Err(e) => DrainedPair::DecodeFailed(e),
+            },
+        },
+        answered = &mut first => match answered {
+            Err(e) => DrainedPair::DecodeFailed(e),
+            Ok(_) => match drain.await {
+                Ok(_) => DrainedPair::Both,
+                Err(e) => DrainedPair::PrefillFailed(e),
+            },
+        },
+    }
 }
 
 /// One side failed while its partner was still dispatching: the verdict is
@@ -1402,11 +1594,18 @@ fn parallel_side_failed_first(
 /// While the prefill side is still dispatching, the decode side's first item
 /// is pulled ahead and held for its reader as it was: output is a handoff of
 /// `handoff_to`'s, the prefill worker the side's silence rule judges (see
-/// [`liveness::prefill_side_reprieve`]).
+/// [`liveness::prefill_side_reprieve`]). While the decode side is still
+/// dispatching after the prefill side's call returned, the prefill side's
+/// first item is pulled ahead the same way: a response is the prefill
+/// side's answer, from which the decode call is due within what `watch`
+/// gives it (see [`DecodeSideWatch`]); past that, with the decode worker
+/// silent, the call is retired and the pair answers with the decode side's
+/// silence verdict.
 async fn dispatch_pd_sides(
     mut prefill: SideDispatch,
     mut decode: SideDispatch,
     handoff_to: Option<&Arc<dyn Worker>>,
+    watch: Option<DecodeSideWatch<'_>>,
 ) -> PdDispatchOutcome {
     /// One turn of the dispatch loop. The `select!` handlers may only
     /// classify — moving a still-pending side out happens after the macro's
@@ -1421,6 +1620,11 @@ async fn dispatch_pd_sides(
         /// The decode side's first item came while the prefill side was
         /// still dispatching: whether it was output, a handoff.
         Witnessed(bool),
+        /// The prefill side's first item came while the decode side was
+        /// still dispatching: whether it was a response, the side's answer.
+        Answered(bool),
+        /// The decode side's deadline passed while it was still dispatching.
+        DecodeDue,
     }
 
     // At most one of these is `Some` at the top of the loop: the second
@@ -1429,14 +1633,25 @@ async fn dispatch_pd_sides(
     let mut prefill_result: Option<StreamResult> = None;
     let mut decode_result: Option<StreamResult> = None;
     let mut watching = handoff_to.is_some();
+    // The prefill side's first item is awaited once, while the decode call
+    // is pending, and its answer arms the decode call's deadline.
+    let mut awaiting_answer = watch.is_some();
+    let mut decode_due: Option<Instant> = None;
 
     loop {
         let witnessing = watching && prefill_result.is_none() && decode_result.is_some();
+        let answering = awaiting_answer
+            && decode_result.is_none()
+            && prefill_result.as_ref().is_some_and(|result| result.is_ok());
+        let judging = decode_due.is_some() && decode_result.is_none();
         // Biased: the decode side's first item, then the decode side, then
         // the prefill side, so a decode answer (and the item a servicer that
         // holds its headers sends with it) landing in the wakeup of the
         // prefill side's deadline is credited before the side is judged.
-        // Each comes once, so neither starves the prefill side.
+        // Each comes once, so neither starves the prefill side. The decode
+        // call's deadline and the prefill side's first item sit between the
+        // two calls for the same reason: a decode call landing in the
+        // wakeup of its deadline is its answer.
         let step = tokio::select! {
             biased;
             handed_off = decode_handed_off(decode_result.as_mut().and_then(|r| r.as_mut().ok())),
@@ -1445,6 +1660,9 @@ async fn dispatch_pd_sides(
                 Err(error) if prefill_result.is_none() => DispatchStep::Alone(PdSide::Decode, error),
                 result => DispatchStep::Decode(result),
             },
+            () = decode_deadline(decode_due), if judging => DispatchStep::DecodeDue,
+            answered = prefill_answered(prefill_result.as_mut().and_then(|r| r.as_mut().ok())),
+                if answering => DispatchStep::Answered(answered),
             result = &mut prefill, if prefill_result.is_none() => match result {
                 Err(error) if decode_result.is_none() => DispatchStep::Alone(PdSide::Prefill, error),
                 result => DispatchStep::Prefill(result),
@@ -1456,6 +1674,47 @@ async fn dispatch_pd_sides(
                 watching = false;
                 if let Some(worker) = handoff_to.filter(|_| handed_off) {
                     worker.note_prefill_handoff();
+                }
+            }
+            DispatchStep::Answered(answered) => {
+                awaiting_answer = false;
+                if answered {
+                    let now = Instant::now();
+                    decode_due = watch.and_then(|watch| {
+                        // Set once: the loop meets the answer once.
+                        let _ = watch.bound.answered.set(now);
+                        watch.due(now)
+                    });
+                }
+            }
+            DispatchStep::DecodeDue => {
+                let Some(watch) = watch else {
+                    decode_due = None;
+                    continue;
+                };
+                match watch.judge("dispatch") {
+                    Ok(more) => decode_due = Some(Instant::now() + more),
+                    Err(verdict) => {
+                        retire_pd_side(
+                            PdSide::Decode,
+                            watch.connection,
+                            Arc::clone(watch.decode),
+                            decode,
+                            Retirement::HandoffSilent,
+                        );
+                        // The deadline is armed only once the prefill
+                        // side's call has returned, so its result is in
+                        // hand; a prefill still pending is retired as the
+                        // partner of a side that failed first.
+                        return match prefill_result.take() {
+                            Some(prefill) => PdDispatchOutcome::Both(prefill, Err(verdict)),
+                            None => PdDispatchOutcome::FailedFirst {
+                                side: PdSide::Decode,
+                                error: verdict,
+                                partner: prefill,
+                            },
+                        };
+                    }
                 }
             }
             DispatchStep::Alone(side, error) => {
@@ -1494,10 +1753,59 @@ async fn decode_handed_off(decode: Option<&mut ProtoStream>) -> bool {
     }
 }
 
+/// Book a prefill side's answer the dispatch loop pulled ahead (see
+/// [`dispatch_pd_sides`]) when the pair is given up on before the side's
+/// reader meets it: the ticket is released with the answer, as at the
+/// instant the loop saw it (the prompt tokens the engine served from its
+/// cache, so the worker's rate learns the prefill it did), and the side's
+/// success is recorded; a drop of the ticket would read as a release without
+/// an answer, and the worker that answered as silent for it. A side holding
+/// no answer (its first item a failure, or the end) leaves the ticket to its
+/// drop.
+fn book_prefill_answer_ahead(
+    prefill: &ProtoStream,
+    ticket: Option<PrefillTicket>,
+    bound: Option<&PrefillBound>,
+    workers: &WorkerSelection,
+    ledger: &AttemptLedger,
+) {
+    let Some(ticket) = ticket else {
+        return;
+    };
+    let answered = bound.and_then(|bound| bound.answered.get().copied());
+    if let (Some(Ok(response)), Some(at)) = (prefill.item_ahead(), answered) {
+        ticket.answered_at(u64::from(response.cached_tokens()), at);
+        workers.record_outcome_prefill(ledger, 200);
+    }
+}
+
+/// Whether the parallel prefill side's first item, pulled ahead of its reader
+/// (see [`ProtoStream::first_item_ahead`]) while the decode side still
+/// dispatches, is a response: the side's answer, as
+/// [`first_prefill_response_within`] reads it, from which the decode side's
+/// first output is due (see [`DecodeSideWatch::due`]). Never completes
+/// without a stream.
+async fn prefill_answered(prefill: Option<&mut ProtoStream>) -> bool {
+    match prefill {
+        Some(prefill) => matches!(prefill.first_item_ahead().await, Some(Ok(_))),
+        None => std::future::pending().await,
+    }
+}
+
+/// The wait until the decode call's deadline. Without one the wait never
+/// ends; the loop disables the branch then, so no clock is read for it.
+async fn decode_deadline(due: Option<Instant>) {
+    match due {
+        Some(due) => tokio::time::sleep_until(due.into()).await,
+        None => std::future::pending().await,
+    }
+}
+
 /// Log, count and translate one side's dispatch failure into the client answer.
 /// A failure that names the rendezvous counts under the rendezvous family too.
-/// A prefill side's silence verdict was logged and counted where its bound
-/// passed, and answers under its own code (see [`prefill_silence_response`]).
+/// A side's silence verdict was logged and counted where its bound passed,
+/// and answers under its own code (see [`prefill_silence_response`] and
+/// [`decode_silence_response`]).
 fn pd_side_error(
     side: PdSide,
     connection: &'static str,
@@ -1509,7 +1817,10 @@ fn pd_side_error(
             return prefill_silence_response(error, prefill);
         }
     }
-    if side == PdSide::Prefill && is_decode_silence(error) {
+    // The decode side's silence verdict is the decode worker's answer on
+    // whichever side it was raised: the prefill side's, waiting on a decode
+    // partner that stalled, or the decode side's own.
+    if is_decode_silence(error) {
         if let Some(decode) = workers.decode_worker() {
             return decode_silence_response(error, decode);
         }
@@ -1579,8 +1890,9 @@ pub(crate) enum Retirement {
     /// late stream is aborted, a late error noted.
     Silent,
     /// Its own first-token bound passed while a KV handoff may still be
-    /// written into it (the decode side of the sequential dispatch): charged
-    /// as [`Self::Silent`] is, and its abort deferred as
+    /// written into it (a decode side waiting on its handoff: the sequential
+    /// dispatch's, or the parallel dispatch's once its prefill side has
+    /// answered): charged as [`Self::Silent`] is, and its abort deferred as
     /// [`Self::PartnerSilent`]'s, since the handoff must not be torn down
     /// mid-write.
     HandoffSilent,
@@ -1685,15 +1997,20 @@ pub(crate) fn retire_pd_side(
 /// `DEADLINE_EXCEEDED`.
 const PREFILL_SILENCE_MESSAGE: &str = "prefill side produced nothing within";
 
-/// The message of the verdict that puts a prefill side's silence on its
-/// stalled decode partner (see [`decode_partner_silent`]).
+/// The message a decode side's silence verdict starts with: the one that
+/// puts a prefill side's silence on its stalled decode partner (see
+/// [`decode_partner_silent`]) and the one on a parallel decode side that
+/// produced nothing after its prefill side answered (see
+/// [`decode_side_silent`]). Both land where [`is_decode_silence`] is read.
 const DECODE_SILENCE_MESSAGE: &str = "decode worker produced nothing within";
 
 /// The bound on one prefill side's silence, counted from its dispatch (see
 /// [`liveness::prefill_side_bound`]); the dispatch instant stays with it,
 /// as a reprieve past the deadline may count from there, and so does the
 /// worker's backlog once a reprieve has read it, for both phases of the
-/// side (see [`liveness::prefill_side_reprieve`]).
+/// side (see [`liveness::prefill_side_reprieve`]). On the parallel dispatch
+/// shape it is the pair's: the decode side, dispatched at the same instant,
+/// has its first output due within it as well (see [`DecodeSideWatch`]).
 #[derive(Clone, Debug)]
 pub(crate) struct PrefillBound {
     dispatched: Instant,
@@ -1705,6 +2022,12 @@ pub(crate) struct PrefillBound {
     /// twice (see [`liveness::decode_side_bound`]).
     partner_bound: Duration,
     backlog: Arc<OnceLock<Duration>>,
+    /// The instant the dispatch loop saw the prefill side's first response,
+    /// pulled ahead there while the decode call was pending (see
+    /// [`dispatch_pd_sides`]): the decode side's deadline runs from it in
+    /// both phases, and the answer is booked as at it when the pair is given
+    /// up on before its reader meets it. Unset when the answer came later.
+    answered: OnceLock<Instant>,
 }
 
 impl PrefillBound {
@@ -1761,7 +2084,187 @@ impl PrefillBound {
             bound,
             partner_bound: bound,
             backlog: Arc::default(),
+            answered: OnceLock::new(),
         })
+    }
+}
+
+/// A parallel dispatch's decode side as its judge reads it: the pair's
+/// bound, the two workers and the side's labels. The side's first output
+/// follows the handoff its prefill side makes, so it is judged only once
+/// that side has answered (before that its silence is the pair's, which the
+/// prefill side's rule judges, a stalled decode partner included): due by
+/// the pair's deadline, or a decode side's bound after the answer, whichever
+/// is later ([`Self::due`]), and past that given up on only while its
+/// worker has produced nothing for any stream within a decode side's bound
+/// ([`Self::judge`], see [`liveness::parallel_decode_side_reprieve`]). A
+/// non-streaming request's decode side has no first-token signal (its one
+/// response is its whole answer), so it is not watched, as on the
+/// sequential shape.
+#[derive(Clone, Copy)]
+struct DecodeSideWatch<'a> {
+    bound: &'a PrefillBound,
+    prefill: &'a Arc<dyn Worker>,
+    decode: &'a Arc<dyn Worker>,
+    connection: &'static str,
+    request_id: &'a str,
+    prompt_tokens: u64,
+}
+
+impl<'a> DecodeSideWatch<'a> {
+    /// The watch over the decode side of `sides` under the pair's `bound`;
+    /// `None` without a bound, a pair, or a first-token signal (a request
+    /// whose responses the engine does not stream).
+    fn of(bound: Option<&'a PrefillBound>, sides: &'a PdSides<'a>) -> Option<Self> {
+        Some(Self {
+            bound: bound.filter(|_| sides.streaming)?,
+            prefill: sides.workers.prefill_worker()?,
+            decode: sides.workers.decode_worker()?,
+            connection: sides.decode_label,
+            request_id: &sides.request_id,
+            prompt_tokens: sides.prompt_tokens,
+        })
+    }
+
+    /// When the side's first output is due once its prefill side answered
+    /// at `answered`: the pair's deadline, or a decode side's bound after
+    /// the answer (the handoff and the decode engine's first step, as the
+    /// sequential shape counts it from its decode dispatch), whichever is
+    /// later. `None` past the clock's range: the side stays unbounded, as a
+    /// prefill side with such a bound does.
+    fn due(self, answered: Instant) -> Option<Instant> {
+        answered
+            .checked_add(self.bound.partner_bound)
+            .map(|after_answer| after_answer.max(self.bound.deadline))
+    }
+
+    /// One check of the side past its deadline, in `phase`: how much longer
+    /// it waits, or the verdict that takes its place (see
+    /// [`decode_side_silent`]).
+    fn judge(self, phase: &'static str) -> Result<Duration, tonic::Status> {
+        let waited = self.bound.dispatched.elapsed();
+        match liveness::parallel_decode_side_reprieve(
+            self.prefill,
+            self.decode,
+            self.bound.partner_bound,
+            waited,
+        ) {
+            SideReprieve::WithinBound(more) | SideReprieve::FirstAnswerDue(more) => Ok(more),
+            SideReprieve::Silent { silent, window } => Err(decode_side_silent(
+                self.decode,
+                self.prefill,
+                self.connection,
+                self.request_id,
+                self.prompt_tokens,
+                DecodeSilence {
+                    waited,
+                    silent,
+                    window,
+                },
+                phase,
+            )),
+        }
+    }
+}
+
+/// What a parallel decode side's silence verdict was judged on (see
+/// [`liveness::SideReprieve::Silent`]).
+#[derive(Clone, Copy, Debug)]
+struct DecodeSilence {
+    /// How long the side had waited since the pair's dispatch.
+    waited: Duration,
+    /// How long its worker had produced nothing (`None`: never).
+    silent: Option<Duration>,
+    /// What that silence was judged against: a decode side's bound.
+    window: Duration,
+}
+
+/// The verdict on a parallel dispatch's decode side that produced nothing
+/// within its bound, in `phase` (`dispatch`: the call returned no stream;
+/// `first_response`: the stream yielded nothing), after its prefill side had
+/// answered, while its worker produced nothing for any stream within the
+/// window either (see [`DecodeSideWatch`]): one WARN naming the decode
+/// worker, the prefill worker and the request, how long the side waited and
+/// how long the worker had produced nothing against which window, the
+/// worker-error counter under the timeout class for the decode worker, and
+/// the status the attempt fails with, which the retry layer may take to
+/// another decode worker (see [`decode_silence_response`]). Nothing is
+/// charged to the prefill worker, which answered. Nothing else bounds this
+/// wait below the request's own timeout: the decode engine's health probes
+/// keep passing while it never schedules the side, and the admission gate
+/// only gated the dispatch.
+fn decode_side_silent(
+    decode: &Arc<dyn Worker>,
+    prefill: &Arc<dyn Worker>,
+    connection: &'static str,
+    request_id: &str,
+    prompt_tokens: u64,
+    silence: DecodeSilence,
+    phase: &'static str,
+) -> tonic::Status {
+    let millis = |span: Duration| u64::try_from(span.as_millis()).unwrap_or(u64::MAX);
+    warn!(
+        request_id = %request_id,
+        worker = decode.redacted_url(),
+        worker_type = metrics_labels::WORKER_DECODE,
+        prefill_worker = prefill.redacted_url(),
+        phase,
+        prompt_tokens,
+        waited_ms = millis(silence.waited),
+        worker_silent_ms = silence.silent.map(millis),
+        window_ms = millis(silence.window),
+        "PD decode side produced nothing past its bound after its prefill side had answered, and its worker produced nothing for any stream within the window; giving up on it"
+    );
+    Metrics::record_worker_error(
+        metrics_labels::WORKER_DECODE,
+        connection,
+        metrics_labels::ERROR_TIMEOUT,
+    );
+    let DecodeSilence {
+        waited,
+        silent,
+        window,
+    } = silence;
+    let worker_silent = match silent {
+        Some(silent) => {
+            format!("its worker produced nothing for {silent:.1?} of a {window:.1?} window")
+        }
+        None => format!("its worker never produced anything (a {window:.1?} window)"),
+    };
+    tonic::Status::deadline_exceeded(format!(
+        "{DECODE_SILENCE_MESSAGE} {waited:.1?} of its dispatch ({phase}): the prefill side had \
+         answered and {worker_silent}"
+    ))
+}
+
+/// Wait for a parallel dispatch's decode side's first item within what its
+/// `watch` gives it from here, where its prefill side has just answered, and
+/// say what it was. The item stays on the stream for its reader; past the
+/// bound, with the decode worker silent, the silence verdict (the caller
+/// drops the side, whose abort is deferred past the handoff).
+async fn first_parallel_decode_response_within(
+    stream: &mut ProtoStream,
+    watch: DecodeSideWatch<'_>,
+) -> Result<FirstItem, tonic::Status> {
+    // The window runs from the prefill side's answer: the instant the
+    // dispatch loop saw it, when it came while the decode call was pending,
+    // else now (the answer came in `first_prefill_response_within`, just
+    // before this wait), so a decode call that returned late in the window
+    // is not given a second one.
+    let answered = watch
+        .bound
+        .answered
+        .get()
+        .copied()
+        .unwrap_or_else(Instant::now);
+    let Some(mut deadline) = watch.due(answered) else {
+        return Ok(FirstItem::Response);
+    };
+    loop {
+        if let Ok(first) = stream.first_response_within(deadline).await {
+            return Ok(first);
+        }
+        deadline = Instant::now() + watch.judge("first_response")?;
     }
 }
 
@@ -1914,14 +2417,17 @@ fn decode_partner_silent(
     ))
 }
 
-/// Whether `status` is the verdict of [`decode_partner_silent`].
+/// Whether `status` is a decode side's silence verdict
+/// ([`decode_partner_silent`] or [`decode_side_silent`]).
 fn is_decode_silence(status: &tonic::Status) -> bool {
     status.code() == tonic::Code::DeadlineExceeded
         && status.message().starts_with(DECODE_SILENCE_MESSAGE)
 }
 
-/// The client answer for a pair given up on for its stalled decode partner:
-/// a 504 under its own code, replayable on another decode worker. The
+/// The client answer for a pair given up on for its decode side's silence
+/// (a stalled decode partner, or a parallel decode side that produced
+/// nothing after its prefill side answered): a 504 under its own code,
+/// replayable on another decode worker. The
 /// decode worker is marked on the response so the retry window closes on it
 /// alone (the prefill stays selectable) and the answer stands when no other
 /// decode worker is available.
@@ -1969,8 +2475,9 @@ fn record_pd_dispatch_outcomes(
     }
 }
 
-/// The breaker sample of a prefill side's silence verdict: on the worker the
-/// verdict charged (the decode partner that stalled, else the prefill).
+/// The breaker sample of a silence verdict: on the worker the verdict
+/// charged (the decode side that stalled or produced nothing, else the
+/// prefill).
 fn record_silence_outcome(
     workers: &WorkerSelection,
     ledger: &AttemptLedger,
@@ -2792,7 +3299,7 @@ pub(crate) mod tests {
     async fn a_failed_prefill_answers_without_waiting_for_the_decode_side() {
         let started = tokio::time::Instant::now();
         let outcome =
-            dispatch_pd_sides(fails_now("bootstrap timeout"), never_answers(), None).await;
+            dispatch_pd_sides(fails_now("bootstrap timeout"), never_answers(), None, None).await;
 
         assert_eq!(
             started.elapsed(),
@@ -2816,6 +3323,7 @@ pub(crate) mod tests {
             answers_after(Duration::from_secs(120)),
             fails_now("decode refused"),
             None,
+            None,
         )
         .await;
 
@@ -2838,7 +3346,7 @@ pub(crate) mod tests {
         let ends: SideDispatch =
             Box::pin(async { Ok(ProtoStream::Fanout(FanoutStream::new(Vec::new()))) });
         let prefill_dispatch = answers_after(Duration::from_secs(1));
-        match dispatch_pd_sides(prefill_dispatch, ends, Some(&prefill)).await {
+        match dispatch_pd_sides(prefill_dispatch, ends, Some(&prefill), None).await {
             PdDispatchOutcome::Both(_, Ok(decode)) => assert!(decode.holds_item_ahead()),
             _ => panic!("both sides answered"),
         }
@@ -2847,6 +3355,242 @@ pub(crate) mod tests {
             None,
             "an end is no handoff"
         );
+    }
+
+    /// A TokenSpeed chunk: the one token a side answers with here.
+    fn ts_chunk() -> ProtoGenerateResponse {
+        ProtoGenerateResponse::TokenSpeed(Box::new(ts::GenerateResponse {
+            response: Some(ts::generate_response::Response::Chunk(
+                ts::GenerateStreamChunk {
+                    token_ids: vec![1],
+                    ..Default::default()
+                },
+            )),
+            ..Default::default()
+        }))
+    }
+
+    /// A side whose call returns at once with a stream that answers one chunk.
+    fn answers_once() -> SideDispatch {
+        Box::pin(async { Ok(ProtoStream::answering_with(Ok(ts_chunk()))) })
+    }
+
+    /// The two workers of a pair.
+    fn pair_workers(workers: &WorkerSelection) -> (Arc<dyn Worker>, Arc<dyn Worker>) {
+        (
+            Arc::clone(workers.prefill_worker().expect("a pair")),
+            Arc::clone(workers.decode_worker().expect("a pair")),
+        )
+    }
+
+    /// The sides of a streaming request on `workers`: its decode side has a
+    /// first token to watch for.
+    fn streaming_sides<'a>(workers: &'a WorkerSelection, ledger: &'a AttemptLedger) -> PdSides<'a> {
+        PdSides::of(workers, ledger, &tokenspeed_request(1, None), true)
+    }
+
+    /// A prefill answer the dispatch loop pulled ahead is booked on the
+    /// prefill worker when the pair is given up on before its reader meets
+    /// it: the ticket is released with the answer as at the instant the loop
+    /// saw it, and the side's success is recorded; a side holding no answer
+    /// leaves the ticket to its drop, a release without an answer.
+    #[test]
+    fn a_prefill_answer_pulled_ahead_is_booked_when_the_pair_is_given_up_on() {
+        let workers = tokenspeed_pair();
+        let ledger = AttemptLedger::default();
+        let (prefill_worker, _) = pair_workers(&workers);
+        let dispatched = Instant::now();
+        let bound = bound_from(dispatched, Duration::from_secs(3));
+        let _ = bound.answered.set(dispatched + Duration::from_millis(40));
+        let ticket = PrefillTicket::book(&prefill_worker, 64).expect("a ticket");
+        assert!(
+            prefill_worker.prefill_answered_ago().is_none(),
+            "nothing answered yet"
+        );
+        let answering = ProtoStream::answering_with(Ok(ts_chunk()));
+        book_prefill_answer_ahead(&answering, Some(ticket), Some(&bound), &workers, &ledger);
+        assert!(
+            prefill_worker.prefill_answered_ago().is_some(),
+            "the held answer is the worker's answer"
+        );
+        assert_eq!(
+            prefill_worker.prefill_backlog(),
+            Duration::ZERO,
+            "the ticket's prompt left the backlog with its answer"
+        );
+
+        let silent = ProtoStream::answering_with(Err(tonic::Status::unavailable("cut")));
+        let (other_prefill, _) = pair_workers(&tokenspeed_pair());
+        let ticket = PrefillTicket::book(&other_prefill, 64).expect("a ticket");
+        book_prefill_answer_ahead(&silent, Some(ticket), Some(&bound), &workers, &ledger);
+        assert!(
+            other_prefill.prefill_answered_ago().is_none(),
+            "a failure held ahead is no answer: the ticket dropped unanswered"
+        );
+    }
+
+    /// The decode side of the parallel shape is watched on a streaming
+    /// request under a bound, and not otherwise (a non-streaming side's one
+    /// response is its whole answer: no first-token signal, as on the
+    /// sequential shape). Its first output is due by the pair's deadline, or
+    /// a decode side's bound after the prefill side's answer, whichever is
+    /// later.
+    #[test]
+    fn the_decode_side_is_watched_on_a_streaming_request_and_due_a_decode_bound_after_the_answer() {
+        let workers = tokenspeed_pair();
+        let ledger = AttemptLedger::default();
+        let plain = PdSides::of(&workers, &ledger, &tokenspeed_request(1, None), false);
+        let sides = streaming_sides(&workers, &ledger);
+        let dispatched = Instant::now();
+        let pair = PrefillBound {
+            partner_bound: Duration::from_secs(1),
+            ..bound_from(dispatched, Duration::from_secs(3))
+        };
+        assert!(
+            DecodeSideWatch::of(Some(&pair), &plain).is_none(),
+            "a non-streaming side has no first-token signal"
+        );
+        assert!(
+            DecodeSideWatch::of(None, &sides).is_none(),
+            "the rule is off"
+        );
+        let watch = DecodeSideWatch::of(Some(&pair), &sides)
+            .expect("a streaming request under a bound is watched");
+        assert_eq!(
+            watch.due(dispatched + Duration::from_secs(1)),
+            Some(dispatched + Duration::from_secs(3)),
+            "an early answer: the pair's deadline"
+        );
+        assert_eq!(
+            watch.due(dispatched + Duration::from_millis(2_500)),
+            Some(dispatched + Duration::from_millis(3_500)),
+            "a late answer: a decode side's bound after it"
+        );
+    }
+
+    /// Parallel shape: the prefill side's call returns and answers at once,
+    /// the decode side's call never returns its stream. The decode call is
+    /// given up on a decode side's bound after the prefill side's answer
+    /// (here the pair's bound as well), not at the request's timeout: the
+    /// prefill's first item, pulled ahead, is held for its reader, the
+    /// verdict names the decode side's silence, and the attempt answers a
+    /// 504 under the decode side's own code that the retry layer may take to
+    /// another decode worker, this one excluded. (Real time: the decode
+    /// worker's output stamps are on the gateway clock, which a paused
+    /// runtime does not move.)
+    #[tokio::test]
+    async fn a_parallel_decode_dispatch_that_returns_no_stream_after_the_prefill_answered_is_given_up_on_at_the_bound(
+    ) {
+        let workers = tokenspeed_pair();
+        let ledger = AttemptLedger::default();
+        let sides = streaming_sides(&workers, &ledger);
+        let (prefill, _decode) = pair_workers(&workers);
+        let bound = Duration::from_millis(500);
+        // The workers were admitted a moment ago: that moment is a bound
+        // old before the pair is dispatched.
+        tokio::time::sleep(bound + Duration::from_millis(100)).await;
+        let started = Instant::now();
+        let pair = bound_from(started, bound);
+        let watch = DecodeSideWatch::of(Some(&pair), &sides).expect("a watch");
+        let outcome =
+            dispatch_pd_sides(answers_once(), never_answers(), Some(&prefill), Some(watch)).await;
+        let elapsed = started.elapsed();
+        let PdDispatchOutcome::Both(prefill_result, decode_result) = outcome else {
+            panic!("the prefill answered and the decode was judged: both results are in");
+        };
+        assert!(
+            prefill_result.is_ok_and(|stream| stream.holds_item_ahead()),
+            "the prefill's first item, pulled ahead, is held for its reader"
+        );
+        let status = failure(decode_result);
+        assert!(is_decode_silence(&status), "{status:?}");
+        assert!(!is_prefill_silence(&status), "{status:?}");
+        assert!(
+            elapsed >= bound && elapsed < 3 * bound,
+            "given up on a decode side's bound after the prefill's answer: {elapsed:?}"
+        );
+        let response = pd_side_error(
+            PdSide::Decode,
+            metrics_labels::CONNECTION_GRPC,
+            &status,
+            &workers,
+        );
+        assert_eq!(response.status(), http::StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(
+            response
+                .headers()
+                .get(error::HEADER_X_SMG_ERROR_CODE)
+                .and_then(|value| value.to_str().ok()),
+            Some("decode_worker_silent")
+        );
+        assert!(
+            response.extensions().get::<FailedSide>().is_some(),
+            "the retry window closes on the decode worker alone"
+        );
+        assert!(
+            is_retryable_response(&response),
+            "another decode worker may take the request"
+        );
+    }
+
+    /// The verdict is on the decode worker, not the side: a decode worker
+    /// that produces output for another stream after the pair's dispatch is
+    /// backed up or slow, so the pending decode call is given up on a decode
+    /// side's bound after that output, not at its own deadline. (Real time,
+    /// as above.)
+    #[tokio::test]
+    async fn a_parallel_decode_dispatch_past_its_deadline_waits_on_while_its_worker_produces() {
+        let workers = tokenspeed_pair();
+        let ledger = AttemptLedger::default();
+        let sides = streaming_sides(&workers, &ledger);
+        let (prefill, decode) = pair_workers(&workers);
+        let bound = Duration::from_millis(500);
+        tokio::time::sleep(bound + Duration::from_millis(100)).await;
+        let produced_at = Duration::from_millis(300);
+        let other_stream = async {
+            tokio::time::sleep(produced_at).await;
+            decode.note_token_progress();
+        };
+        let started = Instant::now();
+        let pair = bound_from(started, bound);
+        let watch = DecodeSideWatch::of(Some(&pair), &sides).expect("a watch");
+        let (outcome, ()) = tokio::join!(
+            dispatch_pd_sides(answers_once(), never_answers(), Some(&prefill), Some(watch),),
+            other_stream
+        );
+        let elapsed = started.elapsed();
+        let PdDispatchOutcome::Both(_, decode_result) = outcome else {
+            panic!("the prefill answered and the decode was judged: both results are in");
+        };
+        let status = failure(decode_result);
+        assert!(is_decode_silence(&status), "{status:?}");
+        assert!(
+            elapsed >= produced_at + bound && elapsed < produced_at + 3 * bound,
+            "given up on a bound after the worker's latest output, not at its own deadline: {elapsed:?}"
+        );
+    }
+
+    /// A decode stream that answers within its bound is left for its reader
+    /// as it was, and what came is named.
+    #[tokio::test]
+    async fn a_parallel_decode_stream_that_answers_within_its_bound_is_left_for_its_reader() {
+        let workers = tokenspeed_pair();
+        let ledger = AttemptLedger::default();
+        let sides = streaming_sides(&workers, &ledger);
+        let (_prefill, decode) = pair_workers(&workers);
+        let pair = bound_from(Instant::now(), Duration::from_secs(3));
+        let watch = DecodeSideWatch::of(Some(&pair), &sides).expect("a watch");
+        let mut stream =
+            ProtoStream::answering_with(Ok(ts_chunk())).tracked_decode_side(Arc::clone(&decode));
+        let first = first_parallel_decode_response_within(&mut stream, watch)
+            .await
+            .expect("answered within the bound");
+        assert_eq!(first, FirstItem::Response);
+        assert!(
+            stream.next().await.is_some_and(|item| item.is_ok()),
+            "the response is replayed"
+        );
+        assert!(stream.next().await.is_none(), "then the end");
     }
 
     /// The failure a dispatch ended with (a stream has no `Debug`).
