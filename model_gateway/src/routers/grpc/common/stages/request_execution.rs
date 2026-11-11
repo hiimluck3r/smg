@@ -1177,7 +1177,15 @@ async fn execute_parallel_pd(
 
     // The prefill worker's handoffs are watched for only where its side has a bound.
     let handoff_to = bound.as_ref().and(prefill_worker);
-    match dispatch_pd_sides(prefill_dispatch, decode_dispatch, handoff_to, watch).await {
+    match dispatch_pd_sides(
+        prefill_dispatch,
+        decode_dispatch,
+        handoff_to,
+        bound.as_ref(),
+        watch,
+    )
+    .await
+    {
         PdDispatchOutcome::Both(prefill_result, decode_result) => {
             parallel_sides_answered(
                 &sides,
@@ -1600,11 +1608,16 @@ fn parallel_side_failed_first(
 /// side's answer, from which the decode call is due within what `watch`
 /// gives it (see [`DecodeSideWatch`]); past that, with the decode worker
 /// silent, the call is retired and the pair answers with the decode side's
-/// silence verdict.
+/// silence verdict. The answer's instant is stamped on `bound` with or
+/// without a watch, so the answer in hand is booked on either pair when the
+/// pair is given up on. A failure pulled ahead there is the prefill side's
+/// answer at once, as its call's failure is: the pending decode call is
+/// retired, not waited for.
 async fn dispatch_pd_sides(
     mut prefill: SideDispatch,
     mut decode: SideDispatch,
     handoff_to: Option<&Arc<dyn Worker>>,
+    bound: Option<&PrefillBound>,
     watch: Option<DecodeSideWatch<'_>>,
 ) -> PdDispatchOutcome {
     /// One turn of the dispatch loop. The `select!` handlers may only
@@ -1621,7 +1634,8 @@ async fn dispatch_pd_sides(
         /// still dispatching: whether it was output, a handoff.
         Witnessed(bool),
         /// The prefill side's first item came while the decode side was
-        /// still dispatching: whether it was a response, the side's answer.
+        /// still dispatching: whether it was a response, the side's answer
+        /// (a failure is `Alone`).
         Answered(bool),
         /// The decode side's deadline passed while it was still dispatching.
         DecodeDue,
@@ -1634,8 +1648,9 @@ async fn dispatch_pd_sides(
     let mut decode_result: Option<StreamResult> = None;
     let mut watching = handoff_to.is_some();
     // The prefill side's first item is awaited once, while the decode call
-    // is pending, and its answer arms the decode call's deadline.
-    let mut awaiting_answer = watch.is_some();
+    // is pending: a failure is the side's answer at once, a response arms
+    // the decode call's deadline.
+    let mut awaiting_answer = true;
     let mut decode_due: Option<Instant> = None;
 
     loop {
@@ -1662,7 +1677,10 @@ async fn dispatch_pd_sides(
             },
             () = decode_deadline(decode_due), if judging => DispatchStep::DecodeDue,
             answered = prefill_answered(prefill_result.as_mut().and_then(|r| r.as_mut().ok())),
-                if answering => DispatchStep::Answered(answered),
+                if answering => match answered {
+                    Err(error) => DispatchStep::Alone(PdSide::Prefill, error),
+                    Ok(answered) => DispatchStep::Answered(answered),
+                },
             result = &mut prefill, if prefill_result.is_none() => match result {
                 Err(error) if decode_result.is_none() => DispatchStep::Alone(PdSide::Prefill, error),
                 result => DispatchStep::Prefill(result),
@@ -1680,11 +1698,11 @@ async fn dispatch_pd_sides(
                 awaiting_answer = false;
                 if answered {
                     let now = Instant::now();
-                    decode_due = watch.and_then(|watch| {
-                        // Set once: the loop meets the answer once.
-                        let _ = watch.bound.answered.set(now);
-                        watch.due(now)
-                    });
+                    // Set once: the loop meets the answer once.
+                    if let Some(bound) = bound {
+                        let _ = bound.answered.set(now);
+                    }
+                    decode_due = watch.and_then(|watch| watch.due(now));
                 }
             }
             DispatchStep::DecodeDue => {
@@ -1783,11 +1801,16 @@ fn book_prefill_answer_ahead(
 /// (see [`ProtoStream::first_item_ahead`]) while the decode side still
 /// dispatches, is a response: the side's answer, as
 /// [`first_prefill_response_within`] reads it, from which the decode side's
-/// first output is due (see [`DecodeSideWatch::due`]). Never completes
-/// without a stream.
-async fn prefill_answered(prefill: Option<&mut ProtoStream>) -> bool {
+/// first output is due (see [`DecodeSideWatch::due`]). A failure is the
+/// side's answer too, given back as such; the end is neither. Never
+/// completes without a stream.
+async fn prefill_answered(prefill: Option<&mut ProtoStream>) -> Result<bool, tonic::Status> {
     match prefill {
-        Some(prefill) => matches!(prefill.first_item_ahead().await, Some(Ok(_))),
+        Some(prefill) => match prefill.first_item_ahead().await {
+            Some(Ok(_)) => Ok(true),
+            Some(Err(status)) => Err(status.clone()),
+            None => Ok(false),
+        },
         None => std::future::pending().await,
     }
 }
@@ -3298,8 +3321,14 @@ pub(crate) mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_failed_prefill_answers_without_waiting_for_the_decode_side() {
         let started = tokio::time::Instant::now();
-        let outcome =
-            dispatch_pd_sides(fails_now("bootstrap timeout"), never_answers(), None, None).await;
+        let outcome = dispatch_pd_sides(
+            fails_now("bootstrap timeout"),
+            never_answers(),
+            None,
+            None,
+            None,
+        )
+        .await;
 
         assert_eq!(
             started.elapsed(),
@@ -3324,6 +3353,7 @@ pub(crate) mod tests {
             fails_now("decode refused"),
             None,
             None,
+            None,
         )
         .await;
 
@@ -3346,7 +3376,7 @@ pub(crate) mod tests {
         let ends: SideDispatch =
             Box::pin(async { Ok(ProtoStream::Fanout(FanoutStream::new(Vec::new()))) });
         let prefill_dispatch = answers_after(Duration::from_secs(1));
-        match dispatch_pd_sides(prefill_dispatch, ends, Some(&prefill), None).await {
+        match dispatch_pd_sides(prefill_dispatch, ends, Some(&prefill), None, None).await {
             PdDispatchOutcome::Both(_, Ok(decode)) => assert!(decode.holds_item_ahead()),
             _ => panic!("both sides answered"),
         }
@@ -3492,8 +3522,14 @@ pub(crate) mod tests {
         let started = Instant::now();
         let pair = bound_from(started, bound);
         let watch = DecodeSideWatch::of(Some(&pair), &sides).expect("a watch");
-        let outcome =
-            dispatch_pd_sides(answers_once(), never_answers(), Some(&prefill), Some(watch)).await;
+        let outcome = dispatch_pd_sides(
+            answers_once(),
+            never_answers(),
+            Some(&prefill),
+            Some(&pair),
+            Some(watch),
+        )
+        .await;
         let elapsed = started.elapsed();
         let PdDispatchOutcome::Both(prefill_result, decode_result) = outcome else {
             panic!("the prefill answered and the decode was judged: both results are in");
@@ -3555,7 +3591,13 @@ pub(crate) mod tests {
         let pair = bound_from(started, bound);
         let watch = DecodeSideWatch::of(Some(&pair), &sides).expect("a watch");
         let (outcome, ()) = tokio::join!(
-            dispatch_pd_sides(answers_once(), never_answers(), Some(&prefill), Some(watch),),
+            dispatch_pd_sides(
+                answers_once(),
+                never_answers(),
+                Some(&prefill),
+                Some(&pair),
+                Some(watch),
+            ),
             other_stream
         );
         let elapsed = started.elapsed();
@@ -3599,6 +3641,80 @@ pub(crate) mod tests {
             Err(status) => status,
             Ok(_) => panic!("expected the dispatch to fail"),
         }
+    }
+
+    /// A prefill side's first item that is a failure, met while the decode
+    /// call is still pending, is the prefill failing first on either pair:
+    /// the pending decode call is retired as its partner, not waited for,
+    /// and a failure stamps no answer.
+    #[tokio::test]
+    async fn a_prefill_whose_first_item_fails_while_the_decode_call_is_pending_fails_first_on_either_pair(
+    ) {
+        let failed = || -> SideDispatch {
+            Box::pin(async {
+                Ok(ProtoStream::answering_with(Err(tonic::Status::internal(
+                    "x",
+                ))))
+            })
+        };
+        let outcome = dispatch_pd_sides(failed(), never_answers(), None, None, None).await;
+        assert!(
+            matches!(
+                outcome,
+                PdDispatchOutcome::FailedFirst {
+                    side: PdSide::Prefill,
+                    ..
+                }
+            ),
+            "the plain pair answers the prefill's failure at once"
+        );
+
+        let workers = tokenspeed_pair();
+        let ledger = AttemptLedger::default();
+        let sides = streaming_sides(&workers, &ledger);
+        let (prefill, _decode) = pair_workers(&workers);
+        let pair = three_second_bound();
+        let watch = DecodeSideWatch::of(Some(&pair), &sides).expect("a watch");
+        let outcome = dispatch_pd_sides(
+            failed(),
+            never_answers(),
+            Some(&prefill),
+            Some(&pair),
+            Some(watch),
+        )
+        .await;
+        let PdDispatchOutcome::FailedFirst { side, error, .. } = outcome else {
+            panic!("the streamed pair answers the prefill's failure at once");
+        };
+        assert_eq!(side, PdSide::Prefill);
+        assert_eq!(error.code(), tonic::Code::Internal);
+        assert!(pair.answered.get().is_none(), "a failure is no answer");
+    }
+
+    /// A prefill answer pulled ahead on the plain pair is stamped on the
+    /// bound as on the streamed pair, so the answer in hand is booked when
+    /// the decode call then fails.
+    #[tokio::test(start_paused = true)]
+    async fn a_prefill_answer_pulled_ahead_on_the_plain_pair_is_stamped_on_the_bound() {
+        let pair = three_second_bound();
+        let decode_fails_later: SideDispatch = Box::pin(async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            Err(tonic::Status::internal("decode refused"))
+        });
+        let outcome =
+            dispatch_pd_sides(answers_once(), decode_fails_later, None, Some(&pair), None).await;
+        let PdDispatchOutcome::Both(Ok(prefill), Err(error)) = outcome else {
+            panic!("the prefill answered and the decode call failed: both results are in");
+        };
+        assert!(
+            prefill.holds_item_ahead(),
+            "the answer is held for its reader"
+        );
+        assert_eq!(error.code(), tonic::Code::Internal);
+        assert!(
+            pair.answered.get().is_some(),
+            "the answer's instant is stamped without a watch"
+        );
     }
 
     fn three_second_bound() -> PrefillBound {
