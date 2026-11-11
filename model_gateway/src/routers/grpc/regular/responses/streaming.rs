@@ -673,8 +673,9 @@ async fn stream_mcp_call(
     );
 
     // Emit output_item.added
-    let event = emitter.emit_output_item_added(output_index, &item);
-    emitter.send_event(&event, tx).await?;
+    emitter
+        .send_output_item_added(output_index, &item, tx)
+        .await?;
 
     // Emit tool_call.in_progress
     let event = emitter.emit_tool_call_in_progress(output_index, &item_id, response_format);
@@ -769,8 +770,9 @@ async fn stream_mcp_call(
         }
     }
 
-    let event = emitter.emit_output_item_done(output_index, &item_done);
-    emitter.send_event(&event, tx).await?;
+    emitter
+        .send_output_item_done(output_index, item_done, tx)
+        .await?;
     emitter.complete_output_item(output_index);
 
     record_mcp_call(state, site.model, tool_output, output_str, output_item);
