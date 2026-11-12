@@ -236,8 +236,8 @@ three: a table's own name (`qwen3`, `gemma4`), a row of `ALIASES`, or a row of `
 table and no alias: it stays on the Harmony pipeline, by the maintainers' decision of 2026-10-17.
 
 <!-- models: begin -->
-245 groups, 435 checkpoints, newest first.
-10 ready, 179 replaying a recorded set, 7 on main awaiting fixtures, 49 pending.
+247 groups, 437 checkpoints, newest first.
+10 ready, 181 replaying a recorded set, 7 on main awaiting fixtures, 49 pending.
 
 | Released | Group | Model | Also | Table | bellwether set | Status | SMG today |
 |---|---|---|---|---|---:|---|---|
@@ -257,6 +257,8 @@ table and no alias: it stays on the Harmony pipeline, by the maintainers' decisi
 | 2026-10-12 | [nvidia-nemotron-3.5-super-vl-120b-a12b-bf16](https://github.com/smg-project/bellwether/tree/main/fixtures/nvidia-nemotron-3.5-super-vl-120b-a12b-bf16) | nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16 | NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4 | `qwen3`, tagged calls | 27 | replaying the set | `qwen_xml`, `nano_v3` |
 | 2026-10-09 | [nvidia-nemotron-3.5-bolt-74b-a9b-bf16](https://github.com/smg-project/bellwether/tree/main/fixtures/nvidia-nemotron-3.5-bolt-74b-a9b-bf16) | nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-BF16 |  | `qwen3`, tagged calls | 27 | replaying the set | `qwen_xml`, `nano_v3` |
 | 2026-10-09 | [youtu-parsing-omni](https://github.com/smg-project/bellwether/tree/main/fixtures/youtu-parsing-omni) | tencent/Youtu-Parsing-Omni |  | `qwen3` | 1 | replaying the set | none |
+| 2026-10-07 | [minicpm-v-4.7-35b-a3b](https://github.com/smg-project/bellwether/tree/main/fixtures/minicpm-v-4.7-35b-a3b) | openbmb/MiniCPM-V-4.7-35B-A3B |  | `qwen3`, tagged calls | 19 | replaying the set | none |
+| 2026-10-06 | [minicpm-v-4.7-1b](https://github.com/smg-project/bellwether/tree/main/fixtures/minicpm-v-4.7-1b) | openbmb/MiniCPM-V-4.7-1B |  | `qwen3`, tagged calls | 19 | replaying the set | none |
 | 2026-10-05 | [d1-3b](https://github.com/smg-project/bellwether/tree/main/fixtures/d1-3b) | LiquidAI/d1-3B |  | `lfm2.5` | 589,657 | replaying the set | none |
 | 2026-10-05 | [nld-uni](https://github.com/smg-project/bellwether/tree/main/fixtures/nld-uni) | nvidia/NLD-Uni |  | `qwen3`, tagged calls | 27 | replaying the set | none |
 | 2026-10-05 | [nvidia-nemotron-3.5-bolt-e4b-bf16](https://github.com/smg-project/bellwether/tree/main/fixtures/nvidia-nemotron-3.5-bolt-e4b-bf16) | nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16 |  | `gemma4` | 28 | replaying the set | `qwen_xml`, `nano_v3` |
