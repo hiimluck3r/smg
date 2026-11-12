@@ -6,6 +6,11 @@ All notable changes to `openai-protocol` are recorded here, newest first.
 
 ### Added
 
+- `responses::validate_metadata_pairs` (the public API's bounds on a `metadata` object, for any
+  map of its pairs), `responses::validate_input_message_role` (an input message's role in the
+  public set) and `common::json_type_name` are public: a route that reads a metadata object or
+  stores message items of its own (the gateway's Conversations routes) validates them with the
+  rules the Responses request already validates with, in the same words and under the same codes.
 - `ValueBody`, behind the `axum` feature: the body of a route that reads JSON it checks itself, a
   transparent newtype over `serde_json::Value` with nothing to validate or normalize before the
   handler sees it, so such a route rides `ValidatedJson` and refuses a body that does not parse, or
@@ -29,6 +34,10 @@ All notable changes to `openai-protocol` are recorded here, newest first.
 
 ### Changed
 
+- A `metadata` value that is not a string is refused as `400 invalid_type`, naming the key and the
+  type sent (`Invalid type for 'metadata.k': expected a string, but got an object instead.`), as
+  the public API refuses one; before, a request's `metadata` passed validation with an object, a
+  number, a boolean or a null value under a key.
 - `ValidatedJson` refuses a body under a `Content-Encoding` the gateway does not decode (any but
   `identity`, in whichever field of a repeated header or position of a comma-separated list it
   stands) before it reads the body, as a `415` in the gateway's JSON error envelope (`error.code`
