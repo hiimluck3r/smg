@@ -159,6 +159,13 @@ impl ChatRequestBuildingStage {
         };
 
         let unbilled_prompt_tokens = processed_messages.unbilled_prompt_tokens;
+        // The image tokens the expansion wrote into the prompt, read before
+        // the plan's assembly takes the intermediate; the usage reports them.
+        let image_tokens = ctx
+            .state
+            .multimodal_intermediate
+            .as_ref()
+            .and_then(|intermediate| intermediate.image_prompt_tokens());
         // The model's profile as preparation derived it, read by the
         // reasoning decision, the plan and the response spec below.
         let provider = ctx
@@ -227,6 +234,7 @@ impl ChatRequestBuildingStage {
         // Only the client-facing usage drops them; settlement keeps the engine's count.
         let mut spec = ChatResponseSpec::for_request(chat_request.as_ref(), provider);
         spec.unbilled_prompt_tokens = unbilled_prompt_tokens;
+        spec.image_tokens = image_tokens;
         spec.reasoning_in_prefill = reasoning_in_prefill;
         spec.symphony = assignment;
         spec.parser_names.clone_from(&ctx.state.parser_names);
