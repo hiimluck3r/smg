@@ -236,8 +236,8 @@ three: a table's own name (`qwen3`, `gemma4`), a row of `ALIASES`, or a row of `
 table and no alias: it stays on the Harmony pipeline, by the maintainers' decision of 2026-10-17.
 
 <!-- models: begin -->
-247 groups, 437 checkpoints, newest first.
-10 ready, 181 replaying a recorded set, 7 on main awaiting fixtures, 49 pending.
+248 groups, 438 checkpoints, newest first.
+10 ready, 182 replaying a recorded set, 7 on main awaiting fixtures, 49 pending.
 
 | Released | Group | Model | Also | Table | bellwether set | Status | SMG today |
 |---|---|---|---|---|---:|---|---|
@@ -273,6 +273,7 @@ table and no alias: it stays on the Harmony pipeline, by the maintainers' decisi
 | 2026-09-21 | [mimo-v2.6-distill-qwen-9b](https://github.com/smg-project/bellwether/tree/main/fixtures/mimo-v2.6-distill-qwen-9b) | XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B |  | `qwen3`, tagged calls, the value between the tags | 589,298 | replaying the set | none |
 | 2026-09-21 | [mimo-v2.6-flash-rl](https://github.com/smg-project/bellwether/tree/main/fixtures/mimo-v2.6-flash-rl) | XiaomiMiMo/MiMo-V2.6-Flash-RL |  | `qwen3`, tagged calls, the value between the tags | 589,298 | replaying the set | none |
 | 2026-09-21 | [mimo-v2.6-pro-rl](https://github.com/smg-project/bellwether/tree/main/fixtures/mimo-v2.6-pro-rl) | XiaomiMiMo/MiMo-V2.6-Pro-RL | MiMo-V2.6-Flash-MOPD, MiMo-V2.6-Pro-MOPD | `qwen3`, tagged calls, the value between the tags | 589,298 | replaying the set | none |
+| 2026-09-17 | [nvidia-nemotronlabs-ai-for-media-sports-basketball](https://github.com/smg-project/bellwether/tree/main/fixtures/nvidia-nemotronlabs-ai-for-media-sports-basketball) | nvidia/NVIDIA-NemotronLabs-AI-for-Media-Sports-Basketball |  | `qwen3`, tagged calls | 11 | replaying the set | none |
 | 2026-09-11 | [atria-dawn-preview](https://github.com/smg-project/bellwether/tree/main/fixtures/atria-dawn-preview) | internlm/Atria-Dawn-Preview | Atria-Dawn-Preview-Ascend-w8a8 | `glm` | 503,273 | replaying the set | none |
 | 2026-09-10 | [deepseek-v4.1-flash](https://github.com/smg-project/bellwether/tree/main/fixtures/deepseek-v4.1-flash) | deepseek-ai/DeepSeek-V4.1-Flash | DeepSeek-V4.1-Flash-1017, nvidia/DeepSeek-V4.1-Flash-1017-NVFP4, nvidia/DeepSeek-V4.1-Flash-NVFP4 | `deepseek_v4.1` | 589,671 | replaying the set | `deepseek_v41`, `deepseek_v41` |
 | 2026-09-06 | [minicpm5-2b](https://github.com/smg-project/bellwether/tree/main/fixtures/minicpm5-2b) | openbmb/MiniCPM5-2B |  | `minicpm5` | 589,289 | replaying the set | none |
