@@ -236,8 +236,8 @@ three: a table's own name (`qwen3`, `gemma4`), a row of `ALIASES`, or a row of `
 table and no alias: it stays on the Harmony pipeline, by the maintainers' decision of 2026-10-17.
 
 <!-- models: begin -->
-240 groups, 430 checkpoints, newest first.
-12 ready, 174 replaying a recorded set, 5 on main awaiting fixtures, 49 pending.
+242 groups, 432 checkpoints, newest first.
+12 ready, 176 replaying a recorded set, 5 on main awaiting fixtures, 49 pending.
 
 | Released | Group | Model | Also | Table | bellwether set | Status | SMG today |
 |---|---|---|---|---|---:|---|---|
@@ -258,7 +258,9 @@ table and no alias: it stays on the Harmony pipeline, by the maintainers' decisi
 | 2026-10-05 | [d1-3b](https://github.com/smg-project/bellwether/tree/main/fixtures/d1-3b) | LiquidAI/d1-3B |  | `lfm2.5` | 589,657 | replaying the set | none |
 | 2026-10-05 | [nld-uni](https://github.com/smg-project/bellwether/tree/main/fixtures/nld-uni) | nvidia/NLD-Uni |  | `qwen3`, tagged calls | 27 | replaying the set | none |
 | 2026-10-05 | [nvidia-nemotron-3.5-bolt-e4b-bf16](https://github.com/smg-project/bellwether/tree/main/fixtures/nvidia-nemotron-3.5-bolt-e4b-bf16) | nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16 |  | `gemma4` | 28 | replaying the set | `qwen_xml`, `nano_v3` |
+| 2026-10-02 | [flora-rewarder](https://github.com/smg-project/bellwether/tree/main/fixtures/flora-rewarder) | nvidia/Flora-Rewarder |  | `qwen3`, tagged calls | 19 | replaying the set | none |
 | 2026-10-02 | [h2o-lightning-4b](https://github.com/smg-project/bellwether/tree/main/fixtures/h2o-lightning-4b) | h2oai/h2o-lightning-4b |  | `qwen3`, tagged calls | 474,543 | replaying the set | none |
+| 2026-10-01 | [flora-captioner](https://github.com/smg-project/bellwether/tree/main/fixtures/flora-captioner) | nvidia/Flora-Captioner |  | `plain` | 2 | replaying the set | none |
 | 2026-09-30 | [mistral-large-4-1t-a52b](https://github.com/smg-project/bellwether/tree/main/fixtures/mistral-large-4-1t-a52b) | mistralai/Mistral-Large-4-1T-A52B | Mistral-Large-4-1T-A52B-NVFP4 | `mistral_v13` | 28 | replaying the set | `mistral`, none |
 | 2026-09-29 | [arex-2](https://github.com/smg-project/bellwether/tree/main/fixtures/arex-2) | BAAI/AREX-2 |  | `qwen3`, tagged calls | 474,563 | replaying the set | none |
 | 2026-09-28 | [iquest-q1](https://github.com/smg-project/bellwether/tree/main/fixtures/iquest-q1) | IQuestLab/IQuest-Q1 |  | `iquest` | 503,273 | replaying the set | none |
