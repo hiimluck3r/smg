@@ -236,8 +236,8 @@ three: a table's own name (`qwen3`, `gemma4`), a row of `ALIASES`, or a row of `
 table and no alias: it stays on the Harmony pipeline, by the maintainers' decision of 2026-10-17.
 
 <!-- models: begin -->
-266 groups, 462 checkpoints, newest first.
-10 ready, 199 replaying a recorded set, 8 on main awaiting fixtures, 49 pending.
+267 groups, 463 checkpoints, newest first.
+10 ready, 199 replaying a recorded set, 9 on main awaiting fixtures, 49 pending.
 
 | Released | Group | Model | Also | Table | bellwether set | Status | SMG today |
 |---|---|---|---|---|---:|---|---|
@@ -245,6 +245,7 @@ table and no alias: it stays on the Harmony pipeline, by the maintainers' decisi
 | 2026-11-10 | [zoomgain-9b](https://github.com/smg-project/bellwether/tree/main/fixtures/zoomgain-9b) | inclusionAI/ZoomGain-9B | ZoomGain-4B | `qwen3`, tagged calls | 28 | replaying the set | none |
 | 2026-11-08 | [minimax-h3-image-pe](https://github.com/smg-project/bellwether/tree/main/fixtures/minimax-h3-image-pe) | MiniMaxAI/MiniMax-H3-Image-PE |  | `qwen3`, tagged calls | 28 | replaying the set | `minimax_m2`, `minimax` |
 | 2026-11-06 | [arete-27b](https://github.com/smg-project/bellwether/tree/main/fixtures/arete-27b) | NousResearch/Arete-27B |  | `qwen3`, tagged calls | 28 | replaying the set | none |
+| 2026-11-06 | [cola2](https://github.com/smg-project/bellwether/tree/main/fixtures/cola2) | ByteDance-Seed/Cola2 |  | `qwen3` | — | awaiting fixtures | none |
 | 2026-10-30 | [mage-vl-cowork](https://github.com/smg-project/bellwether/tree/main/fixtures/mage-vl-cowork) | microsoft/Mage-VL-Cowork |  | `qwen3` | 28 | replaying the set | none |
 | 2026-10-26 | [lbs-27b](https://github.com/smg-project/bellwether/tree/main/fixtures/lbs-27b) | inclusionAI/LBS-27B |  | `qwen3`, tagged calls | 28 | replaying the set | none |
 | 2026-10-26 | [otel-2.0-llm-31b-it](https://github.com/smg-project/bellwether/tree/main/fixtures/otel-2.0-llm-31b-it) | RedHatAI/OTel-2.0-LLM-31B-IT |  | `gemma4` | 28 | replaying the set | none |
