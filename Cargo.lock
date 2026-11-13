@@ -7989,6 +7989,11 @@ dependencies = [
  "serde_yaml",
  "tempfile",
  "thiserror 2.0.21",
+ "thread_local",
+ "tracing",
+ "wasmtime",
+ "wat",
+ "wit-component",
  "wit-parser",
 ]
 
