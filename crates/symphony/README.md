@@ -236,7 +236,7 @@ three: a table's own name (`qwen3`, `gemma4`), a row of `ALIASES`, or a row of `
 table and no alias: it stays on the Harmony pipeline, by the maintainers' decision of 2026-10-17.
 
 <!-- models: begin -->
-258 groups, 451 checkpoints, newest first.
+258 groups, 452 checkpoints, newest first.
 10 ready, 192 replaying a recorded set, 7 on main awaiting fixtures, 49 pending.
 
 | Released | Group | Model | Also | Table | bellwether set | Status | SMG today |
@@ -339,7 +339,7 @@ table and no alias: it stays on the Harmony pipeline, by the maintainers' decisi
 | 2026-03-19 | [dots.mocr](https://github.com/smg-project/bellwether/tree/main/fixtures/dots.mocr) | dots-studio/dots.mocr | dots.mocr-svg | — | 328,662 | pending | none |
 | 2026-03-18 | [nemotron-cascade-2-30b-a3b](https://github.com/smg-project/bellwether/tree/main/fixtures/nemotron-cascade-2-30b-a3b) | nvidia/Nemotron-Cascade-2-30B-A3B |  | `qwen3`, tagged calls | 12,829 | replaying the set | none |
 | 2026-03-10 | [nvidia-nemotron-3-super-120b-a12b-bf16](https://github.com/smg-project/bellwether/tree/main/fixtures/nvidia-nemotron-3-super-120b-a12b-bf16) | nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16 | Nemotron-3-Labs-Ultra-Math-SFT, NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4 | `qwen3`, tagged calls | 12,829 | replaying the set | `qwen_xml`, `nano_v3` |
-| 2026-03-07 | [nvidia-nemotron-3-nano-4b-bf16](https://github.com/smg-project/bellwether/tree/main/fixtures/nvidia-nemotron-3-nano-4b-bf16) | nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16 |  | `qwen3`, tagged calls | 12,829 | replaying the set | `qwen_xml`, `nano_v3` |
+| 2026-03-07 | [nvidia-nemotron-3-nano-4b-bf16](https://github.com/smg-project/bellwether/tree/main/fixtures/nvidia-nemotron-3-nano-4b-bf16) | nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16 | h2oai/h2o-lightning-4b-nemotron-nano | `qwen3`, tagged calls | 12,829 | replaying the set | `qwen_xml`, `nano_v3` |
 | 2026-03-05 | [areal-tau2-telecom-sft-30b](https://github.com/smg-project/bellwether/tree/main/fixtures/areal-tau2-telecom-sft-30b) | inclusionAI/AReaL-tau2-telecom-sft-30B | AReaL-tau2-airline-sft-30B, AReaL-tau2-retail-sft-30B | `qwen3` | 554,276 | replaying the set | none |
 | 2026-03-05 | [areal-tau2-telecom-user-sft-30b](https://github.com/smg-project/bellwether/tree/main/fixtures/areal-tau2-telecom-user-sft-30b) | inclusionAI/AReaL-tau2-telecom-user-sft-30B |  | `qwen3` | 583,086 | replaying the set | none |
 | 2026-03-02 | [gemma-4-e4b-it](https://github.com/smg-project/bellwether/tree/main/fixtures/gemma-4-e4b-it) | google/gemma-4-E4B-it | gemma-4-E2B-it | `gemma4` | 478,253 | replaying the set | `json`, none |
