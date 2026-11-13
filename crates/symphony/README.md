@@ -236,8 +236,8 @@ three: a table's own name (`qwen3`, `gemma4`), a row of `ALIASES`, or a row of `
 table and no alias: it stays on the Harmony pipeline, by the maintainers' decision of 2026-10-17.
 
 <!-- models: begin -->
-258 groups, 452 checkpoints, newest first.
-10 ready, 192 replaying a recorded set, 7 on main awaiting fixtures, 49 pending.
+259 groups, 453 checkpoints, newest first.
+10 ready, 192 replaying a recorded set, 8 on main awaiting fixtures, 49 pending.
 
 | Released | Group | Model | Also | Table | bellwether set | Status | SMG today |
 |---|---|---|---|---|---:|---|---|
@@ -274,6 +274,7 @@ table and no alias: it stays on the Harmony pipeline, by the maintainers' decisi
 | 2026-10-02 | [flora-rewarder](https://github.com/smg-project/bellwether/tree/main/fixtures/flora-rewarder) | nvidia/Flora-Rewarder |  | `qwen3`, tagged calls | 19 | replaying the set | none |
 | 2026-10-02 | [h2o-lightning-4b](https://github.com/smg-project/bellwether/tree/main/fixtures/h2o-lightning-4b) | h2oai/h2o-lightning-4b |  | `qwen3`, tagged calls | 474,543 | replaying the set | none |
 | 2026-10-01 | [flora-captioner](https://github.com/smg-project/bellwether/tree/main/fixtures/flora-captioner) | nvidia/Flora-Captioner |  | `plain` | 2 | replaying the set | none |
+| 2026-10-01 | [granite-4.1-3b-llmon-preview](https://github.com/smg-project/bellwether/tree/main/fixtures/granite-4.1-3b-llmon-preview) | ibm-granite/granite-4.1-3b-llmon-preview |  | `plain` | — | awaiting fixtures | none |
 | 2026-10-01 | [userlm-2.0](https://github.com/smg-project/bellwether/tree/main/fixtures/userlm-2.0) | microsoft/UserLM-2.0 |  | `plain` | — | awaiting fixtures | none |
 | 2026-09-30 | [mistral-large-4-1t-a52b](https://github.com/smg-project/bellwether/tree/main/fixtures/mistral-large-4-1t-a52b) | mistralai/Mistral-Large-4-1T-A52B | Mistral-Large-4-1T-A52B-NVFP4 | `mistral_v13` | 28 | replaying the set | `mistral`, none |
 | 2026-09-29 | [arex-2](https://github.com/smg-project/bellwether/tree/main/fixtures/arex-2) | BAAI/AREX-2 |  | `qwen3`, tagged calls | 474,563 | replaying the set | none |
