@@ -97,8 +97,9 @@ impl<T: Message + 'static> Encoder for SizedProstEncoder<T> {
 /// of many megabytes), the shapes whose inline payloads the reservation is
 /// for; every other message reserves as before. The encoder is instantiated
 /// per message type, so each type check here folds at compile time and a
-/// text request pays one field read.
-fn reserves_for<T: 'static>(item: &T) -> bool {
+/// text request pays one field read. The framed builders read it too, for a
+/// request none of whose payloads rides as a frame of its own.
+pub(crate) fn reserves_for<T: 'static>(item: &T) -> bool {
     let item: &dyn Any = item;
     if let Some(request) = item.downcast_ref::<tokenspeed_proto::GenerateRequest>() {
         return request.mm_inputs.is_some();
