@@ -197,21 +197,21 @@ impl StreamingToolHandler {
         self.accumulator.snapshot_final_response()
     }
 
-    /// Process an SSE event and determine what action to take
+    /// Process an SSE event and determine what action to take. The event is
+    /// parsed once: the accumulator records the parsed value, so the stored
+    /// record holds exactly what the reader relayed, a data payload spanning
+    /// lines included.
     pub fn process_event(&mut self, event_name: Option<&str>, data: &str) -> StreamAction {
-        // Always feed to accumulator for storage
-        self.accumulator.ingest_block(&format!(
-            "{}data: {}",
-            event_name
-                .map(|n| format!("event: {n}\n"))
-                .unwrap_or_default(),
-            data
-        ));
-
         let parsed: Value = match serde_json::from_str(data) {
             Ok(v) => v,
-            Err(_) => return StreamAction::Forward,
+            Err(_) => {
+                // The accumulator logs the unparsable event, as it always did.
+                self.accumulator.ingest_event(event_name, data);
+                return StreamAction::Forward;
+            }
         };
+        // Always feed to accumulator for storage
+        self.accumulator.ingest_parsed(event_name, &parsed);
 
         match get_event_type(event_name, &parsed) {
             ResponseEvent::CREATED => {
@@ -532,8 +532,10 @@ mod tests {
     //! L1054-L1072).
 
     use openai_protocol::event_types::ItemType;
+    use serde_json::json;
 
     use super::*;
+    use crate::test_support::counting_alloc;
 
     /// Feed an `output_item.added` for a function_call item so the handler
     /// has a complete pending call registered.
@@ -1093,4 +1095,94 @@ mod tests {
             );
         }
     }
+
+    /// A relayed event whose data payload spans lines (an upstream that
+    /// indents or splits its JSON over `data:` lines, which the SSE reader
+    /// joins) reaches the stored record whole: the record is built from the
+    /// value the relay parsed, not from a block rebuilt around the payload.
+    #[test]
+    fn an_event_whose_data_spans_lines_reaches_the_record_whole() {
+        let mut handler = StreamingToolHandler::with_starting_index(0);
+        let created = "{\n  \"type\": \"response.created\",\n  \"response\": {\"id\": \"resp_lines\", \"output\": []}\n}";
+
+        let action = handler.process_event(Some("response.created"), created);
+
+        assert!(matches!(action, StreamAction::Forward), "{action:?}");
+        assert_eq!(handler.original_response_id(), Some("resp_lines"));
+        let record = handler
+            .snapshot_final_response()
+            .expect("the created event is on record");
+        assert_eq!(record["id"], json!("resp_lines"));
+    }
+
+    /// The relay hands the accumulator the event it parsed: a relayed text
+    /// delta and a relayed `response.completed` of four output items each
+    /// cost the one parse, with no block rebuilt and no second parse behind
+    /// it. The counts are printed for the Numbers table.
+    #[test]
+    #[expect(
+        clippy::print_stderr,
+        reason = "the count a pin reads is printed for the Numbers table"
+    )]
+    fn a_relayed_event_is_parsed_once() {
+        let mut handler = StreamingToolHandler::with_starting_index(0);
+        let delta = serde_json::to_string(&json!({
+            "type": "response.output_text.delta",
+            "sequence_number": 7,
+            "item_id": "msg_0123456789abcdef0123456789abcdef",
+            "output_index": 0,
+            "content_index": 0,
+            "delta": "a dozen words of answer text that a model streams per step ",
+        }))
+        .expect("a delta event");
+        let items: Vec<Value> = (0..4)
+            .map(|i| {
+                json!({"type": "message", "id": format!("msg_{i}"), "role": "assistant", "status": "completed",
+                    "content": [{"type": "output_text", "text": format!("paragraph {i}: a few sentences of answer text, long enough to live on the heap"), "annotations": []}]})
+            })
+            .collect();
+        let completed = serde_json::to_string(&json!({
+            "type": "response.completed",
+            "sequence_number": 8,
+            "response": {"id": "resp_pinned", "object": "response", "status": "completed", "model": "m",
+                "output": items, "usage": {"input_tokens": 120, "output_tokens": 480, "total_tokens": 600}},
+        }))
+        .expect("a completed event");
+
+        let before = counting_alloc::calls();
+        let delta_action = handler.process_event(Some("response.output_text.delta"), &delta);
+        let delta_calls = counting_alloc::calls() - before;
+        let before = counting_alloc::calls();
+        let completed_action = handler.process_event(Some("response.completed"), &completed);
+        let completed_calls = counting_alloc::calls() - before;
+
+        eprintln!(
+            "a relayed text delta: {delta_calls} allocation calls; a relayed response.completed of four output items: {completed_calls} allocation calls"
+        );
+        assert!(
+            matches!(delta_action, StreamAction::Forward),
+            "{delta_action:?}"
+        );
+        assert!(
+            matches!(completed_action, StreamAction::Forward),
+            "{completed_action:?}"
+        );
+        assert_eq!(
+            handler.snapshot_final_response().map(|r| r["id"].clone()),
+            Some(json!("resp_pinned"))
+        );
+        assert_eq!(
+            delta_calls, PINNED_DELTA_CALLS,
+            "the relayed delta's allocation calls changed"
+        );
+        assert_eq!(
+            completed_calls, PINNED_COMPLETED_CALLS,
+            "the relayed response.completed's allocation calls changed"
+        );
+    }
+
+    /// Allocation calls of the relayed text delta above, today.
+    const PINNED_DELTA_CALLS: usize = 13;
+    /// Allocation calls of the relayed `response.completed` above, today.
+    const PINNED_COMPLETED_CALLS: usize = 204;
 }
