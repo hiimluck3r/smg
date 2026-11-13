@@ -17,6 +17,12 @@ use openai_protocol::worker::{
     EngineMemoryMetricsSnapshot, EngineQueueMetricsSnapshot, SchedulerLoadSnapshot,
 };
 
+/// The sections a `GetLoads` poll asks for. The optional sections beyond
+/// `core` (the disaggregation, queue and memory figures) are dropped by the
+/// engines that do not report them, so asking for every one is always safe
+/// and the routing core every reader needs is unaffected.
+pub const LOAD_SECTIONS: [&str; 4] = ["core", "disagg", "queues", "memory"];
+
 use crate::{common_proto as common, sglang_proto, tokenspeed_proto, trtllm_proto, vllm_proto};
 
 fn unsigned(value: i32) -> u32 {
