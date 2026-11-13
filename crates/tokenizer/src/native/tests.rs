@@ -419,6 +419,7 @@ fn shapes() -> Vec<Shape> {
             ignore_merges: false,
             special: &["[|endofturn|]", "[|tool|]"],
             added: &[],
+            stripped: &[],
         },
         // A line-break stage with `MergedWithNext` (each run of line breaks
         // glued to the text after it), the cl100k-style regex, and the
@@ -1526,6 +1527,7 @@ fn a_space_joined_run_is_never_cut_by_the_pool() {
             ignore_merges: false,
             special: &[],
             added: &[],
+            stripped: &[],
         };
         let tokenizer = tokenizer_of(&shape, &mut state);
         let native = NativeEncoder::from_tokenizer(&tokenizer).expect("native path");
@@ -1642,6 +1644,7 @@ fn a_later_stage_runs_over_the_earlier_stage_pieces_of_the_cut_window() {
             ignore_merges: false,
             special: &[],
             added: &[],
+            stripped: &[],
         };
         let tokenizer = tokenizer_of(&shape, &mut state);
         let native = NativeEncoder::from_tokenizer(&tokenizer).expect("native path");
