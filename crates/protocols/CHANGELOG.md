@@ -38,6 +38,9 @@ All notable changes to `openai-protocol` are recorded here, newest first.
   `content_encoding_message` and `with_accept_encoding_identity`, behind the `axum` feature, are
   the header's reading, the message and the answer's header, shared with the gateway's
   control-plane JSON extractor, which answers the same.
+- The `415` for a `Content-Encoding` the gateway does not decode names at most 64 characters of
+  the refused coding, a longer one cut and the cut marked with `...`; it echoed the header value
+  whole.
 - Breaking: `ResponseFormat::JsonSchema` carries `Box<JsonSchemaFormat>` and
   `ResponseFormat::StructuralTag` carries `Box<serde_json::Map<String, Value>>`. A format had
   grown from 104 to 128 bytes when the schema kept its description and the structural tag
