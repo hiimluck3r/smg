@@ -5430,7 +5430,7 @@ mod tests {
         }
         let stage = regular_stage(Arc::clone(&registry));
         let image = multimodal::MediaPlan::new([MediaContentPart::ImageUrl {
-            url: "data:image/png;base64,AAAA".to_string(),
+            url: "data:image/png;base64,AAAA".to_string().into(),
             detail: None,
             uuid: None,
             max_long_side_pixel: None,
@@ -5923,7 +5923,7 @@ mod tests {
             "a processed image"
         );
         let image_refs = multimodal::MediaPlan::new([MediaContentPart::ImageUrl {
-            url: "data:image/png;base64,AAAA".to_string(),
+            url: "data:image/png;base64,AAAA".to_string().into(),
             detail: None,
             uuid: None,
             max_long_side_pixel: None,
