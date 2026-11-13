@@ -23,6 +23,7 @@ package smg:policy@1.0.0;
 
 /// The view (design 4.1) and the lifecycle (4.3) as the guest sees them.
 interface types {
+  // generated from smg_policy_controller::view by the crate's wit module; do not edit by hand
   /// Health as the pool reads it, one bit each.
   flags health { healthy, breaker-open, stalled, draining, overloaded }
   /// The wires a worker serves.

@@ -57,6 +57,7 @@ pub mod sessions;
 pub mod spec;
 pub mod store;
 pub mod view;
+pub mod wit;
 
 pub use decision::{
     Decision, Pair, Pick, Queue, Shed, ShedReason, Target, Targets, Trace, MAX_TARGETS, TRACE_TOP,
