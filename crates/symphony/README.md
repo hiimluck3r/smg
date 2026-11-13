@@ -236,8 +236,8 @@ three: a table's own name (`qwen3`, `gemma4`), a row of `ALIASES`, or a row of `
 table and no alias: it stays on the Harmony pipeline, by the maintainers' decision of 2026-10-17.
 
 <!-- models: begin -->
-269 groups, 465 checkpoints, newest first.
-10 ready, 201 replaying a recorded set, 9 on main awaiting fixtures, 49 pending.
+270 groups, 466 checkpoints, newest first.
+10 ready, 202 replaying a recorded set, 9 on main awaiting fixtures, 49 pending.
 
 | Released | Group | Model | Also | Table | bellwether set | Status | SMG today |
 |---|---|---|---|---|---:|---|---|
@@ -290,6 +290,7 @@ table and no alias: it stays on the Harmony pipeline, by the maintainers' decisi
 | 2026-09-29 | [arex-2](https://github.com/smg-project/bellwether/tree/main/fixtures/arex-2) | BAAI/AREX-2 |  | `qwen3`, tagged calls | 474,563 | replaying the set | none |
 | 2026-09-28 | [iquest-q1](https://github.com/smg-project/bellwether/tree/main/fixtures/iquest-q1) | IQuestLab/IQuest-Q1 |  | `iquest` | 503,285 | replaying the set | none |
 | 2026-09-24 | [huatuogpt-3-27b](https://github.com/smg-project/bellwether/tree/main/fixtures/huatuogpt-3-27b) | FreedomIntelligence/HuatuoGPT-3-27B |  | `qwen3`, tagged calls | 474,563 | replaying the set | none |
+| 2026-09-23 | [midashenglm-spatial](https://github.com/smg-project/bellwether/tree/main/fixtures/midashenglm-spatial) | mispeech/midashenglm-spatial |  | `plain` | 5 | replaying the set | none |
 | 2026-09-21 | [mimo-v2.6-distill-qwen-9b](https://github.com/smg-project/bellwether/tree/main/fixtures/mimo-v2.6-distill-qwen-9b) | XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B |  | `qwen3`, tagged calls, the value between the tags | 589,298 | replaying the set | none |
 | 2026-09-21 | [mimo-v2.6-flash-rl](https://github.com/smg-project/bellwether/tree/main/fixtures/mimo-v2.6-flash-rl) | XiaomiMiMo/MiMo-V2.6-Flash-RL |  | `qwen3`, tagged calls, the value between the tags | 589,298 | replaying the set | none |
 | 2026-09-21 | [mimo-v2.6-pro-rl](https://github.com/smg-project/bellwether/tree/main/fixtures/mimo-v2.6-pro-rl) | XiaomiMiMo/MiMo-V2.6-Pro-RL | MiMo-V2.6-Flash-MOPD, MiMo-V2.6-Pro-MOPD | `qwen3`, tagged calls, the value between the tags | 589,298 | replaying the set | none |
