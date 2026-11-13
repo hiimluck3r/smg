@@ -461,6 +461,7 @@ const MODELS: &[(&str, GenerationPrompt)] = &[
         GenerationPrompt::OpensTheThoughtByEffort,
     ),
     ("ling-3.0-flash", GenerationPrompt::OpensTheThought),
+    ("ling-3.1-flash", GenerationPrompt::OpensTheThought),
     // GLM writes Ling's syntax with nothing between the tags; its prompt opens the thought
     // whatever the request says (the template has no thinking switch).
     ("glm-5.3-flash", GenerationPrompt::AlwaysOpensTheThought),
