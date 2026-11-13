@@ -9,7 +9,7 @@ use std::{
 use dashmap::DashMap;
 use http::{header::HeaderName, HeaderMap};
 use parking_lot::{Mutex, RwLock};
-use smg_policy_controller::{Needs, Phase};
+use smg_policy_controller::{spec::PolicySpec, Needs, Phase};
 use tracing::{debug, error, info, warn};
 
 /// Policy Registry for managing model-to-policy mappings
@@ -20,7 +20,7 @@ use tracing::{debug, error, info, warn};
 /// When the last worker of a model is removed, the policy mapping is cleaned up.
 use super::{
     as_bucket, as_cache_aware,
-    engine_host::{wants_text, Decider},
+    engine_host::{wants_text, Decider, EngineHostError},
     get_healthy_worker_indices,
     manual::{ExecutionBranch, PinState},
     normalize_model_key, DPRankLoadPolicy, LoadBalancingPolicy, ManualConfig, ManualPolicy,
@@ -371,6 +371,15 @@ impl PolicyRegistry {
             }
         }
         self
+    }
+
+    /// Host the engine of `spec`, the `--policy-spec` document, in place of
+    /// the one the policy configuration describes: the apply at start. A
+    /// document the engine refuses is the caller's error, naming the field.
+    pub fn with_policy_spec(mut self, spec: &PolicySpec) -> Result<Self, EngineHostError> {
+        let decider = Decider::from_spec(spec)?;
+        self.host(decider);
+        Ok(self)
     }
 
     /// Host `decider` as the implementation that decides. This is the apply:
@@ -3593,5 +3602,30 @@ mod tests {
             assert!(policies.pair_engine_for(&keyed).is_none());
             assert!(policies.pair_engine_for(&by_rid).is_none());
         }
+    }
+
+    /// `with_policy_spec` hosts the document's engine, and a document the
+    /// engine refuses comes back naming the field it refused.
+    #[test]
+    fn with_policy_spec_hosts_the_documents_engine_and_names_a_refused_field() {
+        let spec = PolicySpec::preset("round_robin").expect("a preset document");
+        let registry = PolicyRegistry::new(PolicyConfig::Random)
+            .with_policy_spec(&spec)
+            .expect("the document's engine");
+        assert!(
+            registry.decider().is_some(),
+            "the document's engine is hosted"
+        );
+
+        let refused: PolicySpec = serde_json::from_str(
+            r#"{"apiVersion":"smg.policy/v1","profiles":{"p":{"filter":[],"score":["nope"],"pick":"best"}}}"#,
+        )
+        .expect("a well-formed document");
+        let error = PolicyRegistry::new(PolicyConfig::Random)
+            .with_policy_spec(&refused)
+            .map(drop)
+            .expect_err("an unknown scorer is refused")
+            .to_string();
+        assert!(error.contains("unknown scorer \"nope\""), "{error}");
     }
 }
